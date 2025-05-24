@@ -57,6 +57,27 @@ fn check_for_h264(video: &Path) -> bool {
     
 }
 
+fn check_for_subs(video: &Path) -> bool {
+    let ffprobe_command = Command::new("ffprobe")
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg("s")
+        .arg("-show_entries")
+        .arg("stream=index")
+        .arg("-of")
+        .arg("csv=p=0")
+        .arg(video)
+        .output();
+    if ffprobe_command.as_ref().expect("No Output from Command.").stdout.len() > 0 {
+        return true;
+    }
+    else {
+        return false;
+    }
+    
+}
+
 fn convert_video(video: &Path, cli_parse: &Cli) {
     // println!("PLACEHOLDER: {}", video.display());
     let temp_file = video.with_file_name("temp_file.mkv");
@@ -147,16 +168,13 @@ fn main() {
         }
         else {
             let pb = ProgressBar::new(videos.len().try_into().unwrap());
+            pb.set_position(0);
             for video in &videos {
-                pb.inc(1);
                 // Convert Video
                 if !cli_parse.no_transcode {
                     convert_video(video, &cli_parse);
                 }
-                if cli_parse.gen_subs {
-                    // Generate Subs
-                    // NOTE: Maybe there should be logic to determine if there are *NO* subtitles at all.
-                }
+                pb.inc(1);
             }
             pb.finish_with_message("Encoding done for ${i.clone()}");
         }
