@@ -4,6 +4,8 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use indicatif::ProgressBar;
+use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
 
 #[derive(Parser)]
 #[command(name = "vidconvert-rs")]
@@ -58,6 +60,7 @@ fn check_for_h264(video: &Path) -> bool {
 }
 
 fn check_for_subs(video: &Path) -> bool {
+    // check for embedded subs
     let ffprobe_command = Command::new("ffprobe")
         .arg("-v")
         .arg("error")
@@ -69,11 +72,21 @@ fn check_for_subs(video: &Path) -> bool {
         .arg("csv=p=0")
         .arg(video)
         .output();
+    // println!("ffprobe length: {}", ffprobe_command.as_ref().expect("No Output from Command.").stdout.len());
     if ffprobe_command.as_ref().expect("No Output from Command.").stdout.len() > 0 {
         return true;
     }
     else {
-        return false;
+        // if no embedded subs, check for .srt
+        let mut srt_file = video.to_path_buf();
+        srt_file.set_extension("srt");
+        // println!("SRT exists? {}", srt_file.as_path().exists());
+        if srt_file.as_path().exists() {
+            return true;
+        }
+        else {
+            return false;
+        }
     }
     
 }
@@ -119,6 +132,21 @@ fn convert_video(video: &Path, cli_parse: &Cli) {
     }
 }
 
+fn generate_subtitles(video: &Path) {
+    // faster-whisper-xxl.exe .\MythBusters.S06E01.James.Bond.Special.Part.1.720p.mkv --verbose true --language English --model large --max_line_width 250 -o .
+    let _whisper_command = Command::new("faster-whisper-xxl")
+        .arg(video)
+        .arg("--language")
+        .arg("English")
+        .arg("--model")
+        .arg("medium")
+        .arg("--max_line_width")
+        .arg("50")
+        .arg("-o")
+        .arg(video.parent().expect("Failed to get parent directory of video path"))
+        .output();
+}
+
 fn get_videos(directory: &Path, cli_parse: &Cli) -> Vec<PathBuf> {
     let mut videos: Vec<PathBuf> = Vec::new();
 
@@ -132,44 +160,108 @@ fn get_videos(directory: &Path, cli_parse: &Cli) -> Vec<PathBuf> {
         String::from("webm"),
     ];
 
-    if let Ok(files) = fs::read_dir(directory) {
-        for file in files {
-            if let Ok(file) = file {
-                let path = file.path();
-                // println!("{}", path.display());
-                if path.is_dir() {
-                    videos.extend(get_videos(&path, &cli_parse));
+    match fs::metadata(directory) {
+        Ok(metadata) => {
+            if metadata.is_file() && valid_extension.contains(&directory.extension().expect(&format!("ERROR | No Extension found for file {}", &directory.display())).to_string_lossy().to_lowercase()) {
+                if cli_parse.include_h264 {
+                    videos.push(directory.to_path_buf()); 
                 }
-                else if valid_extension.contains(&path.extension().expect(&format!("ERROR | No Extension found for file {}", &path.display())).to_string_lossy().to_lowercase()) {
-                    if cli_parse.include_h264 {
-                        videos.push(path.clone()); 
+                else if !check_for_h264(&directory) {
+                    videos.push(directory.to_path_buf());
+                }
+            }
+            else if metadata.is_dir() {
+                if let Ok(files) = fs::read_dir(directory) {
+                    for file in files {
+                        if let Ok(file) = file {
+                            let path = file.path();
+                            // println!("{}", path.display());
+                            if path.is_dir() {
+                                videos.extend(get_videos(&path, &cli_parse));
+                            }
+                            else if valid_extension.contains(&path.extension().expect(&format!("ERROR | No Extension found for file {}", &path.display())).to_string_lossy().to_lowercase()) {
+                                if cli_parse.include_h264 {
+                                    videos.push(path.clone()); 
+                                }
+                                else if !check_for_h264(&path) {
+                                    videos.push(path.clone());
+                                }
+                            }
+                        }
                     }
-                    else if !check_for_h264(&path) {
-                        videos.push(path.clone());
+                }
+            }
+        }
+        Err(e) => {
+            println!("Failed to get metadata for file {}: {}", directory.display(), e)
+        }
+    }
+
+    return videos;
+}
+
+fn get_videos_without_subs(directory: &Path, cli_parse: &Cli) -> Vec<PathBuf> {
+    let mut videos: Vec<PathBuf> = Vec::new();
+
+    let valid_extension = [
+        String::from("mp4"),
+        String::from("mkv"),
+        String::from("avi"),
+        String::from("mov"),
+        String::from("wmv"),
+        String::from("flv"),
+        String::from("webm"),
+    ];
+
+    if directory.exists() && directory.is_file() && valid_extension.contains(&directory.extension().expect(&format!("ERROR | No Extension found for file {}", &directory.display())).to_string_lossy().to_lowercase()) {
+        if !check_for_subs(&directory) {
+            videos.push(directory.to_path_buf()); 
+        }
+    }
+    else if directory.exists() && directory.is_dir() {
+        if let Ok(files) = fs::read_dir(directory) {
+            for file in files {
+                if let Ok(file) = file {
+                    let path = file.path();
+                    //println!("Path: {}", path.display());
+                    if path.is_dir() {
+                        videos.extend(get_videos_without_subs(&path, &cli_parse));
+                    }
+                    else if valid_extension.contains(&path.extension().expect(&format!("ERROR | No Extension found for file {}", &path.display())).to_string_lossy().to_lowercase()) {
+                        if !check_for_subs(&path) {
+                            videos.push(path.clone()); 
+                        }
                     }
                 }
             }
         }
     }
+    
     return videos;
 }
 
 fn main() {
     let cli_parse = Cli::parse();
     for i in &cli_parse.paths {
-        // println!("{}", i);
+        // println!("+ Starting vidtoolkit-rs for {}", i);
         let directory = Path::new(i);
-        let videos = get_videos(directory, &cli_parse);
-        if cli_parse.dry_run {
-            println!("The Following files WILL be converted in path {}:",i);
-            for video in &videos {
-                println!("  {}", video.display());
+        if !cli_parse.no_transcode {
+            let videos_to_transcode = get_videos(directory, &cli_parse);
+            if cli_parse.dry_run {
+                if videos_to_transcode.len() < 1 {
+                    println!("There are no valid files to be converted.");
+                }
+                else {
+                    println!("The Following files WILL be converted in path {}:",i);
+                    for video in &videos_to_transcode {
+                        println!("    {}", video.display());
+                    }
+                    println!("Total files to convert: {}", videos_to_transcode.len());
+                }
             }
-        }
-        else {
-            let pb = ProgressBar::new(videos.len().try_into().unwrap());
+            let pb = ProgressBar::new(videos_to_transcode.len().try_into().unwrap());
             pb.set_position(0);
-            for video in &videos {
+            for video in &videos_to_transcode {
                 // Convert Video
                 if !cli_parse.no_transcode {
                     convert_video(video, &cli_parse);
@@ -177,6 +269,38 @@ fn main() {
                 pb.inc(1);
             }
             pb.finish_with_message("Encoding done for ${i.clone()}");
+        }
+
+        if cli_parse.gen_subs {
+            // Generating Subs
+            let videos_to_generate_subs_for = get_videos_without_subs(directory, &cli_parse);
+            if cli_parse.dry_run {
+                if videos_to_generate_subs_for.len() < 1 {
+                    println!("There are no valid files to have subs generated.");
+                }
+                else {
+                    println!("The Following files WILL have subs generated in path {}:",i);
+                    for video in &videos_to_generate_subs_for {
+                        println!("    {}", video.display());
+                    }
+                    println!("Total files to generate subs for: {}", videos_to_generate_subs_for.len())
+                }
+            }
+            else {
+                let pb = ProgressBar::new(videos_to_generate_subs_for.len().try_into().unwrap());
+                pb.set_position(0);
+                let pool = ThreadPoolBuilder::new()
+                    .num_threads(4)
+                    .build()
+                    .expect("Failed to build thread pool");
+                pool.install(|| {
+                    videos_to_generate_subs_for.par_iter().for_each(|video| {
+                        generate_subtitles(video);
+                        pb.inc(1);
+                    });
+                });
+                pb.finish_with_message("Sub Generation done for ${i.clone()}");
+            }
         }
         
     }
