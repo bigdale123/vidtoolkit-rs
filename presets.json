@@ -103,7 +103,7 @@
           "VideoLevel": "auto",
           "VideoOptionExtra": "",
           "VideoQualityType": 2,
-          "VideoQualitySlider": 29,
+          "VideoQualitySlider": 25,
           "VideoQSVDecode": true,
           "VideoQSVAsyncDepth": 0,
           "VideoTwoPass": false,
